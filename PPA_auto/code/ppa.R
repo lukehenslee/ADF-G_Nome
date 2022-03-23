@@ -25,16 +25,16 @@
 #===============================================================================
 
 # Set working directory
-setwd("Q:/RESEARCH/Escapement Estimation/Estimations/PPA/Kwiniuk Tower/Updated Data/PPA Analysis - 2001-2020/PPA Automated")
+setwd()
 
 # Source the PPA function
-source("fun/ppa_fun.R")
+source("fun/ppa_fun_v2.R")
 
 # Import raw data
-pink <- read.csv('data/pink_2019.csv')
+pink <- read.csv('data/pink_2000.csv')
 
 # Interpolate data
 pink.int <- ppa.fun(pink)
 
 # Save .xlsx workbook
-saveWorkbook(pink.int[[2]], 'out/pink_int_2019_v2.xlsx')
+saveWorkbook(pink.int[[2]], 'out/pink_ppa_2000.xlsx')
