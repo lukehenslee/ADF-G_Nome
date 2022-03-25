@@ -28,13 +28,13 @@
 setwd()
 
 # Source the PPA function
-source("fun/ppa_fun_v2.R")
+source("fun/ppa_fun.R")
 
 # Import raw data
-pink <- read.csv('data/pink_2000.csv')
+data <- read.csv('data/pink_kwiniuk_1985.csv')
 
 # Interpolate data
-pink.int <- ppa.fun(pink)
+data.int <- ppa.fun(data)
 
 # Save .xlsx workbook
-saveWorkbook(pink.int[[2]], 'out/pink_ppa_2000.xlsx')
+saveWorkbook(data.int[[2]], 'out/pink_kwiniuk_ppa_1985.xlsx')

@@ -11,7 +11,6 @@
 #===============================================================================
 
 # Set working directory
-setwd("C:/Users/lhhenslee/Desktop/Git_repos/ADF-G_Nome/PPA_auto")
 
 # Load packages ####
 require(tidyverse)

@@ -28,13 +28,14 @@
 setwd("C:/Users/lhhenslee/Desktop/Git_repos/ADF-G_Nome/PPA_auto")
 
 # Source the PPA function
-source("code/var_fun_v3.R")
+source("code/var_fun.R")
 
 # Import raw data
-data <- read.csv('data/pink_2019.csv')
+data <- read.csv('data/pink_kwiniuk_2000.csv', 
+                 colClasses = c('character', rep('numeric', length.out = 24)))
 
 # Calculate variance
 data.var <- var.fun(data)
 
 # Save .xlsx workbook
-saveWorkbook(data.var[[2]], 'out/pink_var_2019.xlsx')
+saveWorkbook(data.var[[2]], 'out/pink_kwiniuk_var_2000.xlsx')
