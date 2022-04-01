@@ -5,13 +5,10 @@
 # 
 # Creator: Luke Henslee
 #
-# Purpose: This code calculates error for escapement towers
+# Purpose: This function calculates error for escapement towers
 #===============================================================================
 # NOTES: 
 #===============================================================================
-
-# Set working directory
-setwd("C:/Users/lhhenslee/Desktop/Git_repos/ADF-G_Nome/PPA_auto")
 
 # Load packages ####
 require(tidyverse)

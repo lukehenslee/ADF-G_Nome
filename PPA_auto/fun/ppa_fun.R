@@ -14,10 +14,10 @@ require(tidyverse)
 require(openxlsx)
 require(data.table)
 
-ppa.fun <- function(data) {
+ppa.fun <- function(data1) {
   
   # Manipulate data
-  data <- pivot_longer(data, cols = c(2:25), names_to = "hour")
+  data <- pivot_longer(data1, cols = c(2:25), names_to = "hour")
   data$hour <- substr(data$hour, 2, 5)
   data <- data %>% 
     slice(which.max(is.na(value) == F) : n())
@@ -272,7 +272,7 @@ writeData(out, sheet = 'interpolation', x = h.total)
 writeData(out, sheet = 'variance', x = var.mat)
 writeData(out, sheet = 'total nhat and var', x = var.se)
 writeData(out, sheet = '80% range', x = h.range)
-writeData(out, sheet = 'raw data', x = pink)
+writeData(out, sheet = 'raw data', x = data1)
 
 return(list(h.total, out))
 
