@@ -1,12 +1,12 @@
 #===============================================================================
-# PPA interpolation for pink salmon
+# PPA interpolation for tower counts
 #
-# Date: March 4, 2022
+# Last updated: March 23, 2022
 # 
 # Creator: Luke Henslee
 #
-# Purpose: This code takes hourly escapement data for pink salmon tower counts
-# and interpolates missed hourly counts and missed days using PPA methods
+# Purpose: This code takes hourly escapement data for tower counts
+# and interpolates missed counts and missed days using PPA methods
 #===============================================================================
 # NOTES: Input data files must be raw hourly count data. 
 #
@@ -15,7 +15,7 @@
 #
 # 'date', 'X0000', 'X0100', 'X0200'... etc.
 #
-# The 'date' column must be in mm/dd/yyyy format. 
+# The 'date' column must be in mm/dd/yyyy format.
 #
 # The hour label must be preceded by an 'X' or the code cannot order data 
 # chronologically. 
@@ -25,16 +25,18 @@
 #===============================================================================
 
 # Set working directory
-setwd()
+setwd("Q:/RESEARCH/Escapement Estimation/Estimations/PPA/PPA_auto")
 
 # Source the PPA function
 source("fun/ppa_fun.R")
 
 # Import raw data
-data <- read.csv('data/pink_kwiniuk_1985.csv')
+data <- read.csv('data/kwiniuk/chum_1995.csv', 
+                 colClasses = c('character', rep('numeric', length.out = 24)))
 
 # Interpolate data
 data.int <- ppa.fun(data)
 
-# Save .xlsx workbook
-saveWorkbook(data.int[[2]], 'out/pink_kwiniuk_ppa_1985.xlsx')
+# Save .xlsx workbook in the 'out' folder
+## Name the file: 'species_project_ppa_year.xlsx'
+saveWorkbook(data.int[[2]], 'out/chum_kwiniuk_ppa_1995.xlsx')

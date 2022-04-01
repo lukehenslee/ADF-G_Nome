@@ -1,12 +1,12 @@
 #===============================================================================
-# Calculate variance for tower counts
+# PPA interpolation for tower counts
 #
-# Date: March 25, 2022
+# Last updated: March 23, 2022
 # 
-# Creator: Luke Henslee
+# Creator: Luke Henslee, ADF&G
 #
 # Purpose: This code takes hourly escapement data for tower counts
-# and calculates hourly, daily, and seasonal error
+# and interpolates missed counts and missed days using PPA methods
 #===============================================================================
 # NOTES: Input data files must be raw hourly count data. 
 #
@@ -15,28 +15,22 @@
 #
 # 'date', 'X0000', 'X0100', 'X0200'... etc.
 #
-# The 'date' column must be in mm/dd/yyyy format. 
+# The 'date' column must be in mm/dd/yyyy format.
 #
 # The hour label must be preceded by an 'X' or the code cannot order data 
 # chronologically. 
 #
 # If the data is not eligible for PPA interpolation (according to the 1% rule),
 # the code will show an error.
+#
+# Simply change the name of the file in the read.csv() function to the name of 
+# the file you want to calculate missed passage. The name should be:
+#
+# 'species_project_year.csv'
+#
+# And then change the name of the output file to:
+#
+# 'species_project_ppa_year.xlsx'
+#
 #===============================================================================
 
-# Set working directory
-setwd()
-
-# Source the PPA function
-source("fun/var_fun.R")
-
-# Import raw data
-data <- read.csv('data/pink_kwiniuk_2020.csv', 
-                 colClasses = c('character', rep('numeric', length.out = 24)))
-
-# Interpolate data
-data.int <- var.fun(data)
-
-# Save .xlsx workbook in the 'out' folder
-## Name the file: 'species_project_var_year.xlsx'
-saveWorkbook(data.int[[2]], 'out/pink_kwiniuk_var_2020.xlsx')
