@@ -1,0 +1,1205 @@
+---
+title: "Norton Sound management packet"
+format: html
+editor: visual
+toc: true
+---
+
+# Data source
+
+This management packet pulls data directly from the files contained in "Q:\\Salmon\\COMMERCIAL-salmon" and "Q:\\Salmon\\ESCAPEMENT- Salmon".
+
+Historical data is used to calculate escapement and harvest metric quartiles and the current year is not included in these calculations.
+
+For pink salmon, only even or odd year data is used to calculate quartiles depending on the current year.
+
+```{r}
+#| label: Start up
+#| message: false
+#| warning: false
+#| include: false
+# Start up ####
+
+# Load packages
+library(tidyverse)
+library(readxl)
+library(dplyr)
+library(zoo)
+library(scales)
+
+# Set current year
+yr <- 2026
+
+# Remove scientific notation from plots
+options(scipen = 999)
+```
+
+```{r}
+#| label: Import escapement data
+#| message: false
+#| warning: false
+#| include: false
+
+## Import escapement data ####
+
+## Load data set 
+
+for (file in list.files(path = paste0('Q:/Salmon/ESCAPEMENT- Salmon/', yr, ' Salmon Escapements'),
+                        pattern = '\\.xlsx$', full.names = T)) {
+  
+  # Get available sheets in the current file to prevent errors
+  available_sheets <- excel_sheets(file)
+  
+  for (sheet in c('KING', 'CHUM', 'SOCKEYE', 'RED', 'PINK', 'COHO')) {
+    
+    # Check if the specific sheet actually exists in this file
+    if (sheet %in% available_sheets) {
+      
+      # Create a clean, unique variable name (e.g., "df_file1_Sheet1")
+      to_remove <- c('.xlsx', 'Weir', 'Tower', 'River', yr)
+      pattern_regex <- str_c(to_remove, collapse = '|')
+      clean_file_name <- str_remove_all(basename(file), pattern_regex)
+      var_name <- paste0(clean_file_name, '_', sheet)
+      
+      # Read the sheet and assign it to its own data frame
+      assign(paste0(var_name), read_excel(file, sheet = sheet))
+    }
+  }
+}
+
+# Make a list of data frame names to use for functions 
+df_names_esc <- ls(pattern = '^(Pil|Sna|Nom|Eld|Niu|Kwi|Ung|Sha|Nor)', envir = .GlobalEnv)
+```
+
+```{r}
+#| label: Format esc data
+#| message: false
+#| warning: false
+#| include: false
+
+## Format escapement data ####
+
+esc_format <- function(df) {
+  esc_current <- df %>% 
+    select(where(~ any(str_detect(as.character(.), "Date"), na.rm = TRUE) ||
+                   any(.x %in% 1981:2026, na.rm = TRUE))) %>% 
+    slice((which(.data[[names(.)[1]]] == "Date")[1]):nrow(df)) %>% 
+    select(!which(duplicated(unlist(slice(., 1))))) %>% 
+    set_names(as.character(.[1,])) %>% # Set column names
+    slice(-1) %>% # Get rid of redundant top row
+    filter(grepl("^\\d{5}$", .[[1]])) %>% 
+    mutate(across(-1, as.double)) %>% # Make sure everything is numeric
+    mutate(Date = as.Date(as.numeric(Date), origin = '1899-12-30')) %>%  # Repair date
+    pivot_longer(cols = !'Date',
+                 names_to = 'year',
+                 values_to = 'esc') %>% # Long data
+    mutate(date = make_date(year, month(Date), day(Date))) %>% # Make yyyy-mm-dd col
+    select(-Date) %>% # Get rid of redundant col
+    arrange(date) %>% 
+    group_by(year) %>% 
+    mutate(cum_esc = cumsum(replace_na(esc, 0))) %>% # Calculate yearly cumulative escapement
+    ungroup() %>% 
+    mutate(day_of_year= format(date, "%m-%d")) %>% 
+    select(-year) %>% 
+    filter(year(date) == yr)
+  
+  esc_hist <- df %>% 
+    select(where(~ any(str_detect(as.character(.), "Date"), na.rm = TRUE) ||
+                   any(.x %in% 1981:2026, na.rm = TRUE))) %>% 
+    slice((which(.data[[names(.)[1]]] == "Date")[1]):nrow(df)) %>% 
+    select(!which(duplicated(unlist(slice(., 1))))) %>% 
+    set_names(as.character(.[1,])) %>% # Set column names
+    slice(-1) %>% # Get rid of redundant top row
+    filter(grepl("^\\d{5}$", .[[1]])) %>% 
+    mutate(across(-1, as.double)) %>% # Make sure everything is numeric
+    mutate(Date = as.Date(as.numeric(Date), origin = '1899-12-30')) %>%  # Repair date
+    pivot_longer(cols = !'Date',
+                 names_to = 'year',
+                 values_to = 'esc') %>% # Long data
+    mutate(date = make_date(year, month(Date), day(Date))) %>% # Make yyyy-mm-dd col
+    select(-Date) %>% # Get rid of redundant col
+    arrange(date) %>% 
+    group_by(year) %>% 
+    mutate(cum_esc = cumsum(replace_na(esc, 0))) %>% # Calculate yearly cumulative escapement
+    ungroup() %>% 
+    # This if/else filter will use even/odd years for pinks depending on current year ('yr')
+    filter(if(grepl('PINK', deparse(substitute(df))) == TRUE) { 
+      year(date) %% 2 == yr %% 2
+    } else { TRUE }) %>%
+    filter(year(date) < yr) %>% 
+    group_by(day_of_year = format(date, "%m-%d")) %>%
+    # mutate() adds the new columns while keeping all original rows
+    mutate(avg_esc = mean(esc, na.rm = TRUE),
+           q25 = quantile(esc, probs = 0.25, na.rm = TRUE),
+           q50 = quantile(esc, probs = 0.50, na.rm = TRUE),
+           q75 = quantile(esc, probs = 0.75, na.rm = TRUE),
+           cum_q25 = quantile(cum_esc, probs = 0.25, na.rm = TRUE), 
+           cum_q50 = quantile(cum_esc, probs = 0.50, na.rm = TRUE), 
+           cum_q75 = quantile(cum_esc, probs = 0.75, na.rm = TRUE)
+    ) %>%
+    # Always ungroup when you're finished
+    ungroup() %>%
+    # Deduplicate
+    distinct(day_of_year, .keep_all = T) %>% 
+    # Remove the helper grouping column
+    select(-c(year, esc, date, cum_esc)) 
+  
+  esc <- left_join(esc_current, esc_hist, by = 'day_of_year') %>% 
+    select(-day_of_year)
+  
+  return(esc)
+}
+
+# Apply function to imported escapement data
+list2env(lapply(mget(df_names_esc), 
+                esc_format), envir = .GlobalEnv)
+```
+
+```{r}
+#| label: Daily esc plot
+#| message: false
+#| warning: false
+#| include: false
+
+## Daily escapement plot ####
+
+daily_esc_plot <- function(df) {
+  
+  species <- paste0(substring(sub('.*_', '', deparse(name)), 1, 
+             nchar(sub('.*_', '', deparse(name))) -1))
+  
+  start <-  case_when(species != 'COHO' ~ df[[1,2]],
+                      species == 'COHO' ~ df[[round(nrow(df)/3, 0), 2]])
+    
+  end <- case_when(species == 'SOCKEYE' ~ df[[round(nrow(df)*0.8, 0), 2]],
+                   species != 'COHO' ~ df[[round(nrow(df)*0.6, 0), 2]],
+                   species == 'COHO' ~ df[[nrow(df), 2]]) 
+  
+  fill <- case_when(species == 'KING' ~ 'orange',
+                    species == 'CHUM' ~ 'lightblue',
+                    species == 'PINK' ~ 'pink',
+                    species == 'COHO' ~ 'lightgreen',
+                    TRUE              ~ 'lightsalmon')
+  
+  color <- case_when(species == 'KING' ~ 'darkorange',
+                    species == 'CHUM' ~ 'darkblue',
+                    species == 'PINK' ~ 'maroon',
+                    species == 'COHO' ~ 'darkgreen',
+                    TRUE              ~ 'lightsalmon4') 
+  
+  plot <- ggplot() +
+  labs(title = paste0(substring(sub('_.*', '', deparse(name)), 2), ' River ', 
+                      paste0(str_to_sentence(substring(sub('.*_', '', 
+                      deparse(name)), 1, nchar(sub('.*_', '', deparse(name))) -1))), ' Salmon- Daily escapement'), 
+       subtitle = paste0('Escapement by date in ', yr),
+       caption = 'NOTE: Dashed lines are smoothed 25th, 50th, and 75th historical quartiles',
+       x = 'date',
+       y = 'escapement') +
+  geom_col(data = df, aes(x = date, y = esc), fill = paste0(fill), 
+           color = paste0(color)) +
+  geom_smooth(data = df, aes(x = date, y = q50, group = year(date)),
+              se = F, span = .25, color = 'black', linetype = '12', linewidth = 0.5) +
+  geom_smooth(data = df, aes(x = date, y = q25, group = year(date)), 
+              se = F, span = .25, color = 'black', linetype = '12', linewidth = 0.5) +
+  geom_smooth(data = df, aes(x = date, y = q75, group = year(date)), 
+              se = F, span = .25, color = 'black', linetype = '12', linewidth = 0.5) +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1)) +
+  scale_x_date(date_breaks = '5 days', date_labels = '%b %d', 
+               limits = as.Date(c(paste0(start), paste0(end))))
+  
+  return(plot)
+}
+
+# Apply fucntion to data
+for (name in df_names_esc) {
+  # Pull the actual data frame from the environment using its text name
+  #current_df <- get(name)
+  
+  # Run it through the pipeline
+  processed_df <- daily_esc_plot(get(name))
+  
+  # Create the new name (e.g., "df1_plot")
+  new_name <- paste0(name, "_daily_plot")
+  
+  # Save it back into the Global Environment
+  assign(new_name, processed_df, envir = .GlobalEnv)
+}
+```
+
+```{r}
+#| label: Cumulative escapement plot
+#| echo: false
+#| message: false
+#| warning: false
+
+# Need a list of rivers with goals
+goals <- read.csv('Q:/Salmon/ESCAPEMENT- Salmon/esc_goals.csv')
+
+cum_esc_plot <- function(df) {
+  
+  name <- substring(deparse(name), 2, nchar(deparse(name)) -1)
+  
+  species <- paste0(substring(sub('.*_', '', deparse(name)), 1, 
+                              nchar(sub('.*_', '', deparse(name))) -1))
+  
+  river <- paste0(substring(sub('_.*', '', deparse(name)), 2, 
+                            nchar(sub('_.*', '', deparse(name)))))
+  
+  start <-  case_when(species != 'COHO' ~ df[[1,2]],
+                      species == 'COHO' ~ df[[round(nrow(df)/3, 0), 2]])
+  
+  end <- case_when(species == 'SOCKEYE' ~ df[[round(nrow(df)*0.8, 0), 2]],
+                   species != 'COHO' ~ df[[round(nrow(df)*0.6, 0), 2]],
+                   species == 'COHO' ~ df[[nrow(df), 2]]) 
+
+  
+  fill <- case_when(species == 'KING' ~ 'orange',
+                    species == 'CHUM' ~ 'lightblue',
+                    species == 'PINK' ~ 'pink',
+                    species == 'COHO' ~ 'lightgreen',
+                    TRUE              ~ 'lightsalmon')
+  
+  color <- case_when(species == 'KING' ~ 'darkorange',
+                     species == 'CHUM' ~ 'darkblue',
+                     species == 'PINK' ~ 'maroon',
+                     species == 'COHO' ~ 'darkgreen',
+                     TRUE              ~ 'lightsalmon4') 
+  
+  plot <- ggplot() +
+    labs(title = paste0(substring(sub('_.*', '', deparse(name)), 2), ' River ', 
+                        str_to_sentence(substring(sub('.*_', '', deparse(name)), 1, 
+                                                  nchar(sub('.*_', '', deparse(name))) -1)), ' Salmon- Cumulative escapement'), 
+         subtitle = paste0('Cumulative escapement in ', yr, ': ', comma(as.integer(df[nrow(df), 'cum_esc'])), 
+                           ' fish'),
+         caption = 'NOTE: Dashed lines are 25th, 50th, and 75th historical quartiles',
+         x = 'date',
+         y = 'escapement') +
+    # Range goal
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'lower']) == F)
+      geom_rect(fill = paste0(fill), alpha = .4, 
+                aes(xmin = as.Date(paste0(start)),xmax = as.Date(paste0(end)),
+                    ymin = goals[goals$goals == name, 'lower'],
+                    ymax = goals[goals$goals == name, 'upper']),
+      ) else NULL) +
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'lower']) == F)
+      annotate(geom = 'text', hjust = 0, vjust = -0.5, x = as.Date(paste0(start)), y = goals[goals$goals == name, 'lower'],
+               label = paste0('Lower goal: ' , comma(as.integer(goals[goals$goals == name, 'lower']))),
+      ) else NULL) +
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'upper']) == F)
+      annotate(geom = 'text', hjust = 0, vjust = -0.5, x = as.Date(paste0(start)), y = goals[goals$goals == name, 'upper'],
+               label = paste0('Upper goal: ' , comma(as.integer(goals[goals$goals == name, 'upper']))),
+      ) else NULL) +
+    # Point goal
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'point']) == F)
+      geom_segment(color = paste0(fill), linewidth = 0.5, linetype = 6,
+                   aes(x = as.Date(paste0(start)), xend = as.Date(paste0(end)),
+                       y = goals[goals$goals == name, 'point'],
+                       yend = goals[goals$goals == name, 'point']),
+      ) else NULL) +
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'point']) == F)
+      annotate(geom = 'text', hjust = 0, vjust = -0.5, x = as.Date(paste0(start)), y = goals[goals$goals == name, 'point'],
+               label = paste0('Goal: ' , comma(as.integer(goals[goals$goals == name, 'point']))),
+      ) else NULL) +
+    # Pink even year goal
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'even']) == F && yr %% 2 == 0)
+      geom_segment(color = paste0(fill), linewidth = 0.5, linetype = 6, 
+                   aes(x = as.Date(paste0(start)), xend = as.Date(paste0(end)),
+                       y = goals[goals$goals == name, 'even'],
+                       yend = goals[goals$goals == name, 'even']),
+      ) else NULL) +
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'even']) == F && yr %% 2 == 0)
+      annotate(geom = 'text', hjust = 0, vjust = -0.5, x = as.Date(paste0(start)), y = goals[goals$goals == name, 'even'],
+               label = paste0('Goal: ' , comma(as.integer(goals[goals$goals == name, 'even']))),
+      ) else NULL) +
+    # Pink odd year goal
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'odd']) == F && yr %% 2 == 1)
+      geom_segment(color = paste0(fill), linewidth = 0.5, linetype = 6,
+                   aes(x = as.Date(paste0(start)), xend = as.Date(paste0(end)),
+                       y = goals[goals$goals == name, 'odd'],
+                       yend = goals[goals$goals == name, 'odd']),
+      ) else NULL) +
+    (if (name %in% goals$goals && is.na(goals[goals$goals == name, 'odd']) == F && yr %% 2 == 1)
+      annotate(geom = 'text', hjust = 0, vjust = -0.5, x = as.Date(paste0(start)), y = goals[goals$goals == name, 'odd'],
+               label = paste0('Goal: ' , comma(as.integer(goals[goals$goals == name, 'odd']))),
+      ) else NULL) +
+    geom_line(data = df, aes(x = date, y = cum_esc), linewidth = 1.25, color = paste0(color)) +
+    geom_line(data = df, aes(x = date, y = cum_q50), linewidth = 0.5, linetype = '12') +
+    geom_line(data = df, aes(x = date, y = cum_q25), linewidth = 0.5, linetype = '12') +
+    geom_line(data = df, aes(x = date, y = cum_q75), linewidth = 0.5, linetype = '12') +
+    theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1)) +
+    scale_x_date(date_breaks = '5 days', date_labels = '%b %d', 
+                 limits = as.Date(c(paste0(start), paste0(end))))
+  
+  return(plot)
+  
+}
+
+# Apply function to data
+for (name in df_names_esc) {
+  # Pull the actual data frame from the environment using its text name
+  #current_df <- get(name)
+  
+  # Run it through the pipeline
+  processed_df <- cum_esc_plot(get(name))
+  
+  # Create the new name (e.g., "df1_plot")
+  new_name <- paste0(name, "_cum_plot")
+  
+  # Save it back into the Global Environment
+  assign(new_name, processed_df, envir = .GlobalEnv)
+}
+```
+
+```{r}
+#| label: Commercial data import
+#| message: false
+#| warning: false
+#| include: false
+
+## Import commercial data ####
+
+for (file in list.files(path = paste0('Q:/Salmon/COMMERCIAL- salmon/', yr, ' Commercial'),
+                        pattern = '\\.xlsx$', full.names = T)) {
+  
+  # Get available sheets in the current file to prevent errors
+  available_sheets <- excel_sheets(file)
+  
+  for (sheet in c('KINGS', 'CHUMS', 'SOCKEYES', 'REDS', 'PINKS', 'COHOS')) {
+    
+    # Check if the specific sheet actually exists in this file
+    if (sheet %in% available_sheets) {
+      
+      # Create a clean, unique variable name (e.g., "df_file1_Sheet1")
+      to_remove <- c('333', c(0:60), 'SALMONcatch','_', yr, '.xlsx')
+      pattern_regex <- str_c(to_remove, collapse = '|')
+      clean_file_name <- str_remove_all(basename(file), pattern_regex)
+      var_name <- paste0(clean_file_name, '_', sheet)
+      
+      # Read the sheet and assign it to its own data frame
+      assign(paste0(var_name), read_excel(file, sheet = sheet))
+    }
+  }
+}
+
+# Make a list of data frame names to use for functions 
+df_names_comm <- ls(pattern = '^(NOME|ELIM|GOLOVIN|NORTBAY|SHAK|UNK)', envir = .GlobalEnv)
+```
+
+```{r}
+#| label: Commercial data format
+#| message: false
+#| warning: false
+#| include: false
+
+## Format commercial data ####
+
+comm_format <- function(df) {
+  # The first part of this function deletes all unwanted columns and rows
+    first_date_col <- df %>%
+    select(where(~ any(grepl("date", .x, ignore.case = TRUE)) && 
+                   any(grepl("^\\d{5}$", as.character(.x))))) %>%
+    select(2) %>%
+    colnames()
+  # Find year columns by looking for the first valid numerical value
+  year_cols_info <- sapply(df, function(col) {
+    # Convert everything to numeric; text strings will safely become NA
+    suppressWarnings(num_vals <- as.numeric(as.character(col)))
+    # Remove all NAs (both original NAs and text that failed to convert)
+    clean_nums <- na.omit(num_vals)
+    # Skip the column if it contains no numbers at all
+    if (length(clean_nums) == 0) return(NA)
+    # Grab the first actual number that appeared in the column
+    first_num <- clean_nums[1]
+    if (first_num >= 1963 && first_num <= yr) {
+      return(first_num) # Return the exact year found
+    }
+    return(NA)
+  })
+  # Filter out non-matching columns
+  valid_year_cols <- year_cols_info[!is.na(year_cols_info)]
+  # Keep only the FIRST column name for each unique year found
+  unique_year_col_names <- names(valid_year_cols)[!duplicated(valid_year_cols)]
+  # Combine the date column with your unique year columns
+  final_df <- df %>%
+    select(all_of(c(first_date_col, unique_year_col_names)))
+  # Convert all selected columns to a numeric matrix to easily search for years
+  # (Text and NAs will safely become NA)
+  numeric_matrix <- suppressWarnings(
+    matrix(as.numeric(as.matrix(final_df)), nrow = nrow(final_df))
+  )
+    # Find the row indices where any value is between 1963 and current year
+  matching_rows <- which(rowSums(numeric_matrix >= 1963 & numeric_matrix <= yr, na.rm = TRUE) > 0)
+    # Slice the dataframe starting from the first matching row to the end
+  if (length(matching_rows) > 0) {
+    first_matching_row <- matching_rows[1]
+    final_df_sliced <- final_df %>%
+      slice(first_matching_row:n())
+  } else {
+    # Fallback if no matching row is found (keeps original dataframe)
+    final_df_sliced <- final_df 
+  }
+    final_df_sliced_named <- final_df_sliced %>% 
+    set_names(as.character(.[1,])) %>% 
+    rename(Date = 1) %>% 
+    filter(grepl("^\\d{5}$", as.character(Date))) %>% 
+    mutate(across(-1, as.double)) %>% # Make sure everything is numeric
+    mutate(Date = as.Date(as.numeric(Date), origin = '1899-12-30')) %>% 
+    # Remove all columns with no data- especially in SD1, many years of no fishing
+    # can mess up historical averages
+    select(paste(yr) | where(~ !all(is.na(.x))))
+  
+  harv <- final_df_sliced_named %>%
+    group_by(Date) %>%
+    filter(row_number() == 1) %>%
+    ungroup() %>% 
+    pivot_longer(cols = !'Date',
+                 names_to = 'year',
+                 values_to = 'harv') %>%
+    mutate(date = make_date(year, month(Date), day(Date))) %>%
+    select(-c(Date, year))
+  
+  permits <- final_df_sliced_named %>%
+    group_by(Date) %>%
+    filter(row_number() == 3) %>%
+    ungroup() %>% 
+    pivot_longer(cols = !'Date',
+                 names_to = 'year',
+                 values_to = 'permits') %>%
+    mutate(date = make_date(year, month(Date), day(Date))) %>%
+    select(-c(Date, year))
+  
+  hours <- final_df_sliced_named %>%
+    group_by(Date) %>%
+    filter(row_number() == 4) %>%
+    ungroup() %>% 
+    pivot_longer(cols = !'Date',
+                 names_to = 'year',
+                 values_to = 'hours') %>%
+                 mutate(date = make_date(year, month(Date), day(Date))) %>%
+                 select(-c(Date, year))
+  
+# Combine data 
+comm_current <- list(harv, hours, permits) %>% 
+  reduce(full_join, by = 'date') %>% 
+  mutate(across(c(hours, permits, harv), as.numeric),
+         cpue = (harv/hours/permits)) %>% 
+  filter(year(date) == yr) %>% 
+  arrange(date) %>%
+  mutate(
+    cum_cpue = cumsum(replace_na(cpue, 0)),
+    cum_harv = cumsum(replace_na(harv, 0)),
+    cum_hours = cumsum(replace_na(hours, 0)),
+    day_of_year= format(date, "%m-%d")
+  ) 
+
+comm_hist <- list(harv, hours, permits) %>% 
+  reduce(full_join, by = 'date') %>% 
+  mutate(across(c(hours, permits, harv), as.numeric),
+         cpue = (harv/hours/permits)) %>% 
+  filter(year(date) != yr) %>% 
+  filter(if(grepl('PINKS', deparse(substitute(df))) == TRUE) { 
+    year(date) %% 2 == yr %% 2
+  } else { TRUE }) %>%
+  group_by(year(date)) %>%
+  arrange(date) %>%
+  mutate(
+    cum_cpue = cumsum(replace_na(cpue, 0)),
+    cum_harv = cumsum(replace_na(harv, 0)),
+    cum_hours = cumsum(replace_na(hours, 0))
+  ) %>%
+  ungroup() %>% 
+  select(-'year(date)') %>% 
+  group_by(day_of_year = format(date, "%m-%d")) %>%
+  # mutate() adds the new columns while keeping all original rows
+  mutate(cpue_q25 = quantile(cpue, probs = 0.25, na.rm = TRUE),
+         cpue_q50 = quantile(cpue, probs = 0.50, na.rm = TRUE),
+         cpue_q75 = quantile(cpue, probs = 0.75, na.rm = TRUE),
+         cum_cpue_q25 = quantile(cum_cpue, probs = 0.25, na.rm = TRUE),
+         cum_cpue_q50 = quantile(cum_cpue, probs = 0.50, na.rm = TRUE),
+         cum_cpue_q75 = quantile(cum_cpue, probs = 0.75, na.rm = TRUE),
+         cum_harv_q25 = quantile(cum_harv, probs = 0.25, na.rm = TRUE),
+         cum_harv_q50 = quantile(cum_harv, probs = 0.50, na.rm = TRUE),
+         cum_harv_q75 = quantile(cum_harv, probs = 0.75, na.rm = TRUE),
+         cum_hours_q25 = quantile(cum_hours, probs = 0.25, na.rm = TRUE),
+         cum_hours_q50 = quantile(cum_hours, probs = 0.50, na.rm = TRUE),
+         cum_hours_q75 = quantile(cum_hours, probs = 0.75, na.rm = TRUE)
+  ) %>%
+  ungroup() %>% 
+  # Deduplicate
+  distinct(day_of_year, .keep_all = T) %>% 
+  # Remove helper grouping columns
+  select(-c(harv, date, hours, permits, cpue, cum_cpue, cum_harv, cum_hours))
+
+# Combine
+comm <- left_join(comm_current, comm_hist, by = 'day_of_year') %>% 
+  select(-day_of_year)
+
+rm(comm_current, comm_hist, harv, permits, hours)
+
+return(comm)
+}
+
+# Run df_names_comm through the comm_format function
+list2env(lapply(mget(df_names_comm), 
+                comm_format), envir = .GlobalEnv)
+```
+
+```{r}
+#| label: CPUE by date plot
+#| message: false
+#| warning: false
+#| include: false
+
+## CPUE by date plot ####
+
+daily_cpue_plot <- function(df) {
+  
+  species <- paste0(substring(sub('.*_', '', deparse(name)), 1, 
+                              nchar(sub('.*_', '', deparse(name))) -2))
+  
+  start <-  case_when(species != 'COHO' ~ df[[round(nrow(df)/12, 0),2]],
+                      species == 'COHO' ~ df[[round(nrow(df)/3, 0), 2]])
+  
+  end <- case_when(species == 'SOCKEYE' ~ df[[round(nrow(df)*0.8, 0), 2]],
+                   species != 'COHO' ~ df[[round(nrow(df)*0.6, 0), 2]],
+                   species == 'COHO' ~ df[[round(nrow(df)*0.9, 0), 2]]) 
+  
+  fill <- case_when(species == 'KING' ~ 'orange',
+                    species == 'CHUM' ~ 'lightblue',
+                    species == 'PINK' ~ 'pink',
+                    species == 'COHO' ~ 'lightgreen',
+                    TRUE              ~ 'lightsalmon')
+  
+  color <- case_when(species == 'KING' ~ 'darkorange',
+                     species == 'CHUM' ~ 'darkblue',
+                     species == 'PINK' ~ 'maroon',
+                     species == 'COHO' ~ 'darkgreen',
+                     TRUE              ~ 'lightsalmon4') 
+  
+  sd_code <- paste0(substring(sub('_.*', '', deparse(name)), 2))
+  
+  sd <- case_when(sd_code == 'NOME' ~ 'Nome',
+                  sd_code == 'ELIM' ~ 'Elim',
+                  sd_code == 'GOLOVIN' ~ 'Golovin',
+                  sd_code == 'NORTBAY' ~ 'Norton Bay',
+                  sd_code == 'SHAK' ~ 'Shaktoolik',
+                  sd_code == 'UNK' ~ 'Unalakleet')
+  
+  plot <- ggplot() +
+    labs(title = paste0(sd, ' Subdistrict ', 
+                        paste0(str_to_sentence(substring(sub('.*_', '', 
+                        deparse(name)), 1, nchar(sub('.*_', '', deparse(name))) -2))), ' Salmon- CPUE by date'), 
+         subtitle = paste0('CPUE by date in ', yr),
+         caption = 'NOTE: Dashed lines are smoothed 25th, 50th, and 75th historical quartiles',
+         x = 'date',
+         y = 'cpue') +
+    geom_smooth(data = df, aes(x = date, y = cpue_q25, group = year(date)),
+                se = F, span = .25, color = 'black', linetype = '12', linewidth = 0.5) +
+    geom_smooth(data = df, aes(x = date, y = cpue_q50, group = year(date)), 
+                se = F, span = .25, color = 'black', linetype = '12', linewidth = 0.5) +
+    geom_smooth(data = df, aes(x = date, y = cpue_q75, group = year(date)), 
+                se = F, span = .25, color = 'black', linetype = '12', linewidth = 0.5) +
+    geom_point(data = df, aes(x = date, y = cpue), size = 2.5, color = paste0(color)) +
+    geom_label(data = df, aes(x = date, y = cpue, label = round(cpue, 2)), 
+               vjust = -1, size = 3.5) +
+    coord_cartesian(clip = "off") +
+    theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1)) +
+    scale_x_date(date_breaks = '5 days', date_labels = '%b %d', 
+                 limits = as.Date(c(paste0(start), paste0(end))))
+  
+  return(plot)
+}
+
+# Apply function to data
+for (name in df_names_comm) {
+  # Pull the actual data frame from the environment using its text name
+  #current_df <- get(name)
+  
+  # Run it through the pipeline
+  processed_df <- daily_cpue_plot(get(name))
+  
+  # Create the new name (e.g., "df1_plot")
+  new_name <- paste0(name, "_daily_cpue_plot")
+  
+  # Save it back into the Global Environment
+  assign(new_name, processed_df, envir = .GlobalEnv)
+}
+```
+
+```{r}
+#| label: Cum CPUE plot
+#| message: false
+#| warning: false
+#| include: false
+## Cumulative CPUE plot template ####
+
+cum_cpue_plot <- function(df) {
+  
+  species <- paste0(substring(sub('.*_', '', deparse(name)), 1, 
+                              nchar(sub('.*_', '', deparse(name))) -2))
+  
+  start <-  case_when(species != 'COHO' ~ df[[round(nrow(df)/12, 0),2]],
+                      species == 'COHO' ~ df[[round(nrow(df)/3, 0), 2]])
+  
+  end <- case_when(species == 'SOCKEYE' ~ df[[round(nrow(df)*0.8, 0), 2]],
+                   species != 'COHO' ~ df[[round(nrow(df)*0.6, 0), 2]],
+                   species == 'COHO' ~ df[[round(nrow(df)*0.9, 0), 2]]) 
+  
+  fill <- case_when(species == 'KING' ~ 'orange',
+                    species == 'CHUM' ~ 'lightblue',
+                    species == 'PINK' ~ 'pink',
+                    species == 'COHO' ~ 'lightgreen',
+                    TRUE              ~ 'lightsalmon')
+  
+  color <- case_when(species == 'KING' ~ 'darkorange',
+                     species == 'CHUM' ~ 'darkblue',
+                     species == 'PINK' ~ 'maroon',
+                     species == 'COHO' ~ 'darkgreen',
+                     TRUE              ~ 'lightsalmon4') 
+  
+  sd_code <- paste0(substring(sub('_.*', '', deparse(name)), 2))
+  
+  sd <- case_when(sd_code == 'NOME' ~ 'Nome',
+                  sd_code == 'ELIM' ~ 'Elim',
+                  sd_code == 'GOLOVIN' ~ 'Golovin',
+                  sd_code == 'NORTBAY' ~ 'Norton Bay',
+                  sd_code == 'SHAK' ~ 'Shaktoolik',
+                  sd_code == 'UNK' ~ 'Unalakleet')
+  
+  plot <- ggplot() +
+    labs(title = paste0(sd, ' Subdistrict ', 
+                        paste0(str_to_sentence(substring(sub('.*_', '', 
+                        deparse(name)), 1, nchar(sub('.*_', '', deparse(name))) -2))), ' Salmon- Cumulative CPUE'), 
+         subtitle = paste0('Cumulative CPUE in ', yr, ': ', round(df[nrow(df), 'cum_cpue'], 2)),
+         caption = 'NOTE: Dashed lines are 25th, 50th, and 75th historical quartiles',
+         x = 'date',
+         y = 'cpue') +
+    geom_line(data = df, aes(x = date, y = cum_cpue_q25, group = year(date)),
+                color = 'black', linetype = '12',
+                linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_cpue_q50, group = year(date)), 
+                color = 'black', linetype = '12',
+                linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_cpue_q75, group = year(date)), 
+                color = 'black', linetype = '12',
+                linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_cpue), color = paste0(color),
+              linewidth = 1.25) +
+    theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1)) +
+    scale_x_date(date_breaks = '5 days', date_labels = '%b %d', 
+                 limits = as.Date(c(paste0(start), paste0(end))))
+  
+  return(plot)
+}
+
+# Apply function to data
+for (name in df_names_comm) {
+  # Pull the actual data frame from the environment using its text name
+  #current_df <- get(name)
+  
+  # Run it through the pipeline
+  processed_df <- cum_cpue_plot(get(name))
+  
+  # Create the new name (e.g., "df1_plot")
+  new_name <- paste0(name, "_cum_cpue_plot")
+  
+  # Save it back into the Global Environment
+  assign(new_name, processed_df, envir = .GlobalEnv)
+}
+```
+
+```{r}
+#| label: Cum harv plot
+#| message: false
+#| warning: false
+#| include: false
+## Cumulative harvest plot template ####
+
+cum_harv_plot <- function(df) {
+  
+  species <- paste0(substring(sub('.*_', '', deparse(name)), 1, 
+                              nchar(sub('.*_', '', deparse(name))) -2))
+  
+  start <-  case_when(species != 'COHO' ~ df[[round(nrow(df)/12, 0),2]],
+                      species == 'COHO' ~ df[[round(nrow(df)/3, 0), 2]])
+  
+  end <- case_when(species == 'SOCKEYE' ~ df[[round(nrow(df)*0.8, 0), 2]],
+                   species != 'COHO' ~ df[[round(nrow(df)*0.6, 0), 2]],
+                   species == 'COHO' ~ df[[round(nrow(df)*0.9, 0), 2]]) 
+  
+  fill <- case_when(species == 'KING' ~ 'orange',
+                    species == 'CHUM' ~ 'lightblue',
+                    species == 'PINK' ~ 'pink',
+                    species == 'COHO' ~ 'lightgreen',
+                    TRUE              ~ 'lightsalmon')
+  
+  color <- case_when(species == 'KING' ~ 'darkorange',
+                     species == 'CHUM' ~ 'darkblue',
+                     species == 'PINK' ~ 'maroon',
+                     species == 'COHO' ~ 'darkgreen',
+                     TRUE              ~ 'lightsalmon4') 
+  
+  sd_code <- paste0(substring(sub('_.*', '', deparse(name)), 2))
+  
+  sd <- case_when(sd_code == 'NOME' ~ 'Nome',
+                  sd_code == 'ELIM' ~ 'Elim',
+                  sd_code == 'GOLOVIN' ~ 'Golovin',
+                  sd_code == 'NORTBAY' ~ 'Norton Bay',
+                  sd_code == 'SHAK' ~ 'Shaktoolik',
+                  sd_code == 'UNK' ~ 'Unalakleet')
+  
+  plot <- ggplot() +
+  labs(title = paste0(sd, ' Subdistrict ', 
+                      paste0(str_to_sentence(substring(sub('.*_', '', 
+                      deparse(name)), 1, nchar(sub('.*_', '', deparse(name))) -2))), ' Salmon- Cumulative harvest'),
+       subtitle = paste0('Cumulative harvest in ', yr, ': ', comma(as.integer(df[nrow(df), 'cum_harv']))),
+       caption = 'NOTE: Dashed lines are 25th, 50th, and 75th historical quartiles',
+       x = 'date',
+       y = 'harvest') +
+    geom_line(data = df, aes(x = date, y = cum_harv_q25, group = year(date)),
+                color = 'black', linetype = '12',
+                linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_harv_q50, group = year(date)), 
+                color = 'black', linetype = '12',
+                linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_harv_q75, group = year(date)), 
+                color = 'black', linetype = '12',
+                linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_harv), color = paste0(color),
+              linewidth = 1.25) +
+    theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1)) +
+    scale_x_date(date_breaks = '5 days', date_labels = '%b %d', 
+                 limits = as.Date(c(paste0(start), paste0(end))))
+  
+  return(plot)
+}
+
+for (name in df_names_comm) {
+  # Pull the actual data frame from the environment using its text name
+  #current_df <- get(name)
+  
+  # Run it through the pipeline
+  processed_df <- cum_harv_plot(get(name))
+  
+  # Create the new name (e.g., "df1_plot")
+  new_name <- paste0(name, "_cum_harv_plot")
+  
+  # Save it back into the Global Environment
+  assign(new_name, processed_df, envir = .GlobalEnv)
+}
+```
+
+```{r}
+#| label: Cum hours plot
+#| message: false
+#| warning: false
+#| include: false
+## Cumulative hours plot template ####
+
+
+cum_hours_plot <- function(df) {
+  
+  start <-  df[[1,2]]
+  
+  end <- df[[nrow(df), 2]] 
+  
+  color <- 'firebrick'
+  
+  sd_code <- paste0(substring(sub('_.*', '', deparse(name)), 2))
+  
+  sd <- case_when(sd_code == 'NOME' ~ 'Nome',
+                  sd_code == 'ELIM' ~ 'Elim',
+                  sd_code == 'GOLOVIN' ~ 'Golovin',
+                  sd_code == 'NORTBAY' ~ 'Norton Bay',
+                  sd_code == 'SHAK' ~ 'Shaktoolik',
+                  sd_code == 'UNK' ~ 'Unalakleet')
+  
+  plot <- ggplot() +
+    labs(title = paste0(sd, ' Subdistrict- Commercial fishing hours'), 
+         subtitle = paste0('Cumulative fishing hours in ', yr, ': ', round(df[nrow(df), 'cum_hours'], 2)),
+         caption = 'NOTE: Dashed lines are smoothed 25th, 50th, and 75th historical quartiles',
+         x = 'date',
+         y = 'hours') +
+    geom_line(data = df, aes(x = date, y = cum_hours_q25, group = year(date)),
+              color = 'black', linetype = '12',
+              linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_hours_q50, group = year(date)), 
+              color = 'black', linetype = '12',
+              linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_hours_q75, group = year(date)), 
+              color = 'black', linetype = '12',
+              linewidth = 0.5) +
+    geom_line(data = df, aes(x = date, y = cum_hours), color = paste0(color),
+              linewidth = 1.25) +
+    theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1)) +
+    scale_x_date(date_breaks = '7 days', date_labels = '%b %d', 
+                 limits = as.Date(c(paste0(start), paste0(end))))
+  
+  return(plot)
+}
+
+for (name in df_names_comm[grepl('CHUM', df_names_comm)]) {
+  # Doesn't matter the species since it is the same commercial hours for all
+  
+  # Run it through the pipeline
+  processed_df <- cum_hours_plot(get(name))
+  
+  # Create the new name (e.g., "df1_plot")
+  new_name <- paste0(paste0(substring(sub('_.*', '', deparse(name)), 2)), "_cum_hours_plot")
+  
+  # Save it back into the Global Environment
+  assign(new_name, processed_df, envir = .GlobalEnv)
+}
+```
+
+# Subdistrict 1- Nome
+
+## Nome Subdistrict Escapement
+
+### Snake River weir
+
+```{r}
+#| label: Snake weir
+#| echo: false
+#| message: false
+#| warning: false
+Snake_KING_daily_plot
+Snake_KING_cum_plot
+Snake_CHUM_daily_plot
+Snake_CHUM_cum_plot
+Snake_PINK_daily_plot
+Snake_PINK_cum_plot
+Snake_SOCKEYE_daily_plot
+Snake_SOCKEYE_cum_plot
+Snake_COHO_daily_plot
+Snake_COHO_cum_plot
+```
+
+### Nome River weir
+
+```{r}
+#| label: Nome weir
+#| echo: false
+#| message: false
+#| warning: false
+Nome_KING_daily_plot
+Nome_KING_cum_plot
+Nome_CHUM_daily_plot
+Nome_CHUM_cum_plot
+Nome_PINK_daily_plot
+Nome_PINK_cum_plot
+Nome_SOCKEYE_daily_plot
+Nome_SOCKEYE_cum_plot
+Nome_COHO_daily_plot
+Nome_COHO_cum_plot
+```
+
+### Eldorado River weir
+
+```{r}
+#| label: Eldo weir
+#| echo: false
+#| message: false
+#| warning: false
+Eldorado_KING_daily_plot
+Eldorado_KING_cum_plot
+Eldorado_CHUM_daily_plot
+Eldorado_CHUM_cum_plot
+Eldorado_PINK_daily_plot
+Eldorado_PINK_cum_plot
+Eldorado_SOCKEYE_daily_plot
+Eldorado_SOCKEYE_cum_plot
+Eldorado_COHO_daily_plot
+Eldorado_COHO_cum_plot
+```
+
+## Nome Subdistrict Commercial Harvest
+
+```{r}
+#| label: SD1 comm harvest
+#| echo: false
+#| message: false
+#| warning: false
+
+NOME_cum_hours_plot
+
+NOME_KINGS_daily_cpue_plot
+NOME_KINGS_cum_cpue_plot
+NOME_KINGS_cum_harv_plot
+
+NOME_CHUMS_daily_cpue_plot
+NOME_CHUMS_cum_cpue_plot
+NOME_CHUMS_cum_harv_plot
+
+NOME_PINKS_daily_cpue_plot
+NOME_PINKS_cum_cpue_plot
+NOME_PINKS_cum_harv_plot
+
+NOME_REDS_daily_cpue_plot
+NOME_REDS_cum_cpue_plot
+NOME_REDS_cum_harv_plot
+
+NOME_COHOS_daily_cpue_plot
+NOME_COHOS_cum_cpue_plot
+NOME_COHOS_cum_harv_plot
+```
+
+# Subdistrict 2- Golovin
+
+## Golovin Subdistrict Escapement
+
+### Niukluk River weir
+
+```{r}
+#| label: Niukluk weir
+#| echo: false
+#| message: false
+#| warning: false
+Niukluk_KING_daily_plot
+Niukluk_KING_cum_plot
+Niukluk_CHUM_daily_plot
+Niukluk_CHUM_cum_plot
+Niukluk_PINK_daily_plot
+Niukluk_PINK_cum_plot
+Niukluk_COHO_daily_plot
+Niukluk_COHO_cum_plot
+```
+
+## Golovin Subdistrict Commercial Harvest
+
+```{r}
+#| label: SD2 comm harvest
+#| echo: false
+#| message: false
+#| warning: false
+
+GOLOVIN_cum_hours_plot
+
+GOLOVIN_KINGS_daily_cpue_plot
+GOLOVIN_KINGS_cum_cpue_plot
+GOLOVIN_KINGS_cum_harv_plot
+
+GOLOVIN_CHUMS_daily_cpue_plot
+GOLOVIN_CHUMS_cum_cpue_plot
+GOLOVIN_CHUMS_cum_harv_plot
+
+GOLOVIN_PINKS_daily_cpue_plot
+GOLOVIN_PINKS_cum_cpue_plot
+GOLOVIN_PINKS_cum_harv_plot
+
+GOLOVIN_REDS_daily_cpue_plot
+GOLOVIN_REDS_cum_cpue_plot
+GOLOVIN_REDS_cum_harv_plot
+
+GOLOVIN_COHOS_daily_cpue_plot
+GOLOVIN_COHOS_cum_cpue_plot
+GOLOVIN_COHOS_cum_harv_plot
+```
+
+# Subdistrict 3- Elim
+
+## Elim Subdistrict Escapement
+
+### Kwiniuk River tower
+
+```{r}
+#| label: Kwiniuk tower
+#| echo: false
+#| message: false
+#| warning: false
+Kwiniuk_KING_daily_plot
+Kwiniuk_KING_cum_plot
+Kwiniuk_CHUM_daily_plot
+Kwiniuk_CHUM_cum_plot
+Kwiniuk_PINK_daily_plot
+Kwiniuk_PINK_cum_plot
+Kwiniuk_COHO_daily_plot
+Kwiniuk_COHO_cum_plot
+```
+
+## Elim Subdistrict Commercial Harvest
+
+```{r}
+#| label: SD3 comm harvest
+#| echo: false
+#| message: false
+#| warning: false
+
+ELIM_cum_hours_plot
+
+ELIM_KINGS_daily_cpue_plot
+ELIM_KINGS_cum_cpue_plot
+ELIM_KINGS_cum_harv_plot
+
+ELIM_CHUMS_daily_cpue_plot
+ELIM_CHUMS_cum_cpue_plot
+ELIM_CHUMS_cum_harv_plot
+
+ELIM_PINKS_daily_cpue_plot
+ELIM_PINKS_cum_cpue_plot
+ELIM_PINKS_cum_harv_plot
+
+ELIM_REDS_daily_cpue_plot
+ELIM_REDS_cum_cpue_plot
+ELIM_REDS_cum_harv_plot
+
+ELIM_COHOS_daily_cpue_plot
+ELIM_COHOS_cum_cpue_plot
+ELIM_COHOS_cum_harv_plot
+```
+
+# Subdistrict 4- Norton Bay
+
+## Norton Bay Subdistrict Escapement
+
+### Ungalik River tower
+
+```{r}
+#| label: Ungalik tower
+#| echo: false
+#| message: false
+#| warning: false
+Ungalik_KING_daily_plot
+Ungalik_KING_cum_plot
+Ungalik_CHUM_daily_plot
+Ungalik_CHUM_cum_plot
+Ungalik_PINK_daily_plot
+Ungalik_PINK_cum_plot
+Ungalik_COHO_daily_plot
+Ungalik_COHO_cum_plot
+```
+
+## Norton Bay Subdistrict Commercial Harvest
+
+```{r}
+#| label: SD4 comm harvest
+#| echo: false
+#| message: false
+#| warning: false
+
+NORTBAY_cum_hours_plot
+
+NORTBAY_KINGS_daily_cpue_plot
+NORTBAY_KINGS_cum_cpue_plot
+NORTBAY_KINGS_cum_harv_plot
+
+NORTBAY_CHUMS_daily_cpue_plot
+NORTBAY_CHUMS_cum_cpue_plot
+NORTBAY_CHUMS_cum_harv_plot
+
+NORTBAY_PINKS_daily_cpue_plot
+NORTBAY_PINKS_cum_cpue_plot
+NORTBAY_PINKS_cum_harv_plot
+
+NORTBAY_REDS_daily_cpue_plot
+NORTBAY_REDS_cum_cpue_plot
+NORTBAY_REDS_cum_harv_plot
+
+NORTBAY_COHOS_daily_cpue_plot
+NORTBAY_COHOS_cum_cpue_plot
+NORTBAY_COHOS_cum_harv_plot
+```
+
+# Subdistrict 5- Shaktoolik
+
+## Shaktoolik Subdistrict Escapement
+
+### Shaktoolik River tower
+
+```{r}
+#| label: Shaktoolik tower
+#| echo: false
+#| message: false
+#| warning: false
+Shaktoolik_KING_daily_plot
+Shaktoolik_KING_cum_plot
+Shaktoolik_CHUM_daily_plot
+Shaktoolik_CHUM_cum_plot
+Shaktoolik_PINK_daily_plot
+Shaktoolik_PINK_cum_plot
+Shaktoolik_COHO_daily_plot
+Shaktoolik_COHO_cum_plot
+```
+
+## Shaktoolik Subdistrict Commercial Harvest
+
+```{r}
+#| label: SD5 comm harvest
+#| echo: false
+#| message: false
+#| warning: false
+
+SHAK_cum_hours_plot
+
+SHAK_KINGS_daily_cpue_plot
+SHAK_KINGS_cum_cpue_plot
+SHAK_KINGS_cum_harv_plot
+
+SHAK_CHUMS_daily_cpue_plot
+SHAK_CHUMS_cum_cpue_plot
+SHAK_CHUMS_cum_harv_plot
+
+SHAK_PINKS_daily_cpue_plot
+SHAK_PINKS_cum_cpue_plot
+SHAK_PINKS_cum_harv_plot
+
+SHAK_REDS_daily_cpue_plot
+SHAK_REDS_cum_cpue_plot
+SHAK_REDS_cum_harv_plot
+
+SHAK_COHOS_daily_cpue_plot
+SHAK_COHOS_cum_cpue_plot
+SHAK_COHOS_cum_harv_plot
+```
+
+# Subdistrict 6- Unalakleet
+
+## Unalakleet Subdistrict Escapement
+
+### North River tower
+
+```{r}
+#| label: North tower
+#| echo: false
+#| message: false
+#| warning: false
+North_KING_daily_plot
+North_KING_cum_plot
+North_CHUM_daily_plot
+North_CHUM_cum_plot
+North_PINK_daily_plot
+North_PINK_cum_plot
+North_COHO_daily_plot
+North_COHO_cum_plot
+```
+
+## Unalakleet Subdistrict Commercial Harvest
+
+```{r}
+#| label: SD6 comm harvest
+#| echo: false
+#| message: false
+#| warning: false
+
+UNK_cum_hours_plot
+
+UNK_KINGS_daily_cpue_plot
+UNK_KINGS_cum_cpue_plot
+UNK_KINGS_cum_harv_plot
+
+UNK_CHUMS_daily_cpue_plot
+UNK_CHUMS_cum_cpue_plot
+UNK_CHUMS_cum_harv_plot
+
+UNK_PINKS_daily_cpue_plot
+UNK_PINKS_cum_cpue_plot
+UNK_PINKS_cum_harv_plot
+
+UNK_REDS_daily_cpue_plot
+UNK_REDS_cum_cpue_plot
+UNK_REDS_cum_harv_plot
+
+UNK_COHOS_daily_cpue_plot
+UNK_COHOS_cum_cpue_plot
+UNK_COHOS_cum_harv_plot
+```
